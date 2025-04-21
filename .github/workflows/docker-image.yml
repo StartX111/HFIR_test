@@ -2,7 +2,8 @@ name: Deploy to servak
 
 on:
   push:
-    branches: [ main ] # или master, в зависимости от основной ветки
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
