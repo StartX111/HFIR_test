@@ -1,108 +1,36 @@
-name: Deployment to OrangePi Server
+name: Deploy to OrangePi
 
 on:
   push:
-    branches:
-      - "master"
-  workflow_dispatch:
-
-permissions:
-  contents: read
+    branches: [ main ] # или master, в зависимости от основной ветки
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
-    concurrency:
-      group: "fhir-app-deployment"
-      cancel-in-progress: false
-
     steps:
-      - name: Check out the repository code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Set up SSH
+      - name: Build Docker image
         run: |
-          set -e
+          docker build -t webapp:latest .
+          docker save -o app.tar.gz webapp:latest
+
+      - name: Setup SSH
+        run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Create docker-compose.yml
+      - name: Deploy to server
         run: |
-          cat > docker-compose.yml << 'EOF'
-          version: '3'
+          scp -i ~/.ssh/id_ed25519 app.tar.gz ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
           
-          services:
-            fhir-app:
-              build:
-                context: .
-                dockerfile: Dockerfile
-              container_name: fhir_app
-              restart: unless-stopped
-              ports:
-                - "3000:3000"
-              environment:
-                - NODE_ENV=production
-                - EXTERNAL_FHIR_URL=${EXTERNAL_FHIR_URL}
-              volumes:
-                - ./.env:/app/backend/.env
-          EOF
-
-      - name: Archive and upload code to server
-        run: |
-          set -e
-          TEMP_DIR=$(mktemp -d)
-          
-          cp -r ./* "$TEMP_DIR/" 2>/dev/null || true
-          cp -r ./.* "$TEMP_DIR/" 2>/dev/null || true
-          cp docker-compose.yml "$TEMP_DIR/"
-          
-          cd "$TEMP_DIR"
-          
-          tar -czf app.tar.gz \
-            --exclude=.git \
-            --exclude=.github \
-            --exclude=*.log \
-            --exclude=node_modules \
-            --warning=no-file-changed \
-            --ignore-failed-read \
-            .
-          
-          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
-            app.tar.gz \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
-
-      - name: Deploy on OrangePi
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -p ${{ secrets.ORANGE_PI_PORT || '22' }} \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
-            set -e
-          
-            mkdir -p ~/fhir-app
-          
-            tar xzf /tmp/app.tar.gz -C ~/fhir-app
-          
-            cd ~/fhir-app
-          
-            if [ ! -f .env ]; then
-              echo "EXTERNAL_FHIR_URL=${{ secrets.EXTERNAL_FHIR_URL || 'http://localhost:8080/fhir' }}" > .env
-            fi
-          
-            sed -i 's|CMD \["node", "server.js"\]|CMD ["node", "/app/backend/server.js"]|' Dockerfile
-          
-            docker-compose down || true
-          
-            docker system prune -f
-          
-            docker-compose up -d --build
-          
-            if ! docker ps | grep fhir_app; then
-              echo "Container failed to start!"
-              docker-compose logs
-              exit 1
-            else
-              echo "Deployment successful!"
-            fi
-          EOF
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} "
+            cd /tmp
+            docker load -i app.tar.gz
+            docker stop webapp || true
+            docker rm webapp || true
+            docker run -d --name webapp -p 3000:3000 --restart always webapp:latest
+          "
