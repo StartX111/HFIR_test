@@ -1,4 +1,3 @@
-
 <template>
   <div>
     <h1>Patients</h1>
@@ -9,37 +8,39 @@
           @search-click="onSearchClick"
       />
     </div>
-    <table>
+    <div v-if="isLoading" class="loader-container">
+      <SvgIcon type="mdi" :path="mdiLoading" class="loading-icon"></SvgIcon>
+    </div>
+    <table v-else>
       <thead>
-        <tr>
-          <th>ID</th>
-          <th>Text</th>
-          <th>Name</th>
-          <th>Second name</th>
-          <th>Gender</th>
-          <th>Birthday</th>
-          <th>Updated</th>
-        </tr>
+      <tr>
+        <th>ID</th>
+        <th>Text</th>
+        <th>Name</th>
+        <th>Second name</th>
+        <th>Gender</th>
+        <th>Birthday</th>
+        <th>Updated</th>
+      </tr>
       </thead>
       <tbody>
-        <tr v-for="item in data" :key="item.id">
-          <td>
-            <a :href='item?.fullUrl' target="_blank">
-              {{ item?.resource?.id || 'N/A' }}
-            </a>
-          </td>
-          <td
+      <tr v-for="item in data" :key="item.id">
+        <td>
+          <a :href='item?.fullUrl' target="_blank">
+            {{ item?.resource?.id || 'N/A' }}
+          </a>
+        </td>
+        <td
             v-html="item?.resource?.text?.div || 'N/A'"
             @click="navigateToDetail(item?.resource?.id)"
-          >
-          </td>
-
-          <td>{{ nameFormating(item?.resource?.name) || 'N/A' }}</td>
-          <td>{{ familyFormating(item?.resource?.name) || 'N/A' }}</td>
-          <td>{{ item?.resource?.gender || 'N/A' }}</td>
-          <td>{{ (item?.resource?.birthDate && dateFormater(item?.resource?.birthDate)) || 'N/A' }}</td>
-          <td>{{ item?.resource?.meta?.lastUpdated && dateFormater(item?.resource?.meta?.lastUpdated) || 'N/A' }}</td>
-        </tr>
+        >
+        </td>
+        <td>{{ nameFormating(item?.resource?.name) || 'N/A' }}</td>
+        <td>{{ familyFormating(item?.resource?.name) || 'N/A' }}</td>
+        <td>{{ item?.resource?.gender || 'N/A' }}</td>
+        <td>{{ (item?.resource?.birthDate && dateFormater(item?.resource?.birthDate)) || 'N/A' }}</td>
+        <td>{{ item?.resource?.meta?.lastUpdated && dateFormater(item?.resource?.meta?.lastUpdated) || 'N/A' }}</td>
+      </tr>
       </tbody>
     </table>
     <select id="number-select" v-model="selectedNumber" @change="fetchData()">
@@ -56,12 +57,16 @@
 <script>
 import formatters from '../utils/formatters.js'
 import Search from "../components/Search.vue";
-import {useRoute} from "vue-router";
 import search from "../components/Search.vue";
+import SvgIcon from '@jamescoyle/vue-icon';
+import { mdiLoading } from '@mdi/js';
 
 export default {
   name: 'Patients',
-  components: {Search},
+  components: {
+    Search,
+    SvgIcon
+  },
   data() {
     return {
       data: [],
@@ -70,6 +75,8 @@ export default {
       errorMessage: '',
       numbers: [10, 20, 30, 40],
       selectedNumber: 10,
+      isLoading: false,
+      mdiLoading,
     };
   },
 
@@ -105,6 +112,7 @@ export default {
         return;
       }
 
+      this.isLoading = true;
       try {
         const params = {};
         if (/^[a-zA-Z0-9]+([-][a-zA-Z0-9]+)+$/.test(searchValue)) {
@@ -125,14 +133,17 @@ export default {
         this.originalUrl = responseData?.originalUrl || undefined;
         this.data = responseData?.entry || [];
       } catch (e) {
-        console.log('No parameters found in the URL!')
+        console.log('No parameters found in the URL!');
+      } finally {
+        this.isLoading = false;
       }
     },
     async fetchData() {
+      this.isLoading = true;
       try {
-        let query = ''
+        let query = '';
         if (this.selectedNumber > 10) {
-          query = `?limit=${ this.selectedNumber}`
+          query = `?limit=${this.selectedNumber}`;
         }
         const response = await fetch(`http://localhost:3000/api/patients${query}`, {
           method: 'GET',
@@ -141,15 +152,17 @@ export default {
 
         if (!response.ok) {
           throw new Error(
-              'Ошибка ответа от сервера: ' + response.statusText
+              'Error in get information from server: ' + response.statusText
           );
         }
         const responseData = await response.json();
         this.originalUrl = responseData?.originalUrl || undefined;
         this.data = responseData?.entry || [];
       } catch (error) {
-        this.errorMessage = 'Произошла ошибка при загрузке данных!';
+        this.errorMessage = 'Error loading data!';
         console.error(error);
+      } finally {
+        this.isLoading = false;
       }
     },
   },
@@ -186,5 +199,25 @@ td:nth-child(2):hover {
 }
 select {
   margin: 1rem;
+}
+.loader-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 200px;
+}
+.loading-icon {
+  width: 40px;
+  height: 40px;
+  color: #3498db;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

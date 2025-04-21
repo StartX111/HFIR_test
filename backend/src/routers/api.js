@@ -28,10 +28,10 @@ router.get('/patients', async (req, res) => {
     data['originalUrl'] = externalFHIRUrl;
     res.json(data);
   } catch (error) {
-    console.error('Ошибка при выполнении запроса:', error);
+    console.error('Error executing request:', error);
 
     res.status(500).json({
-      errorMessage: 'Ошибка сервера при запросе данных',
+      errorMessage: 'Server error while requesting data',
       error
     });
   }
@@ -67,10 +67,10 @@ router.get('/patients/search', async (req, res) => {
     data['originalUrl'] = externalFHIRUrl;
     res.json(data);
   } catch (error) {
-    console.error('Ошибка при выполнении запроса:', error);
+    console.error('Error executing request:', error);
 
     res.status(500).json({
-      errorMessage: 'Ошибка сервера при запросе данных',
+      errorMessage: 'Server error while requesting data',
       error
     });
   }
@@ -99,10 +99,10 @@ router.get('/patients/:id', async (req, res) => {
     data['originalUrl'] = externalFHIRUrl;
     res.json(data);
   } catch (error) {
-    console.error('Ошибка при выполнении запроса:', error);
+    console.error('Error executing request:', error);
 
     res.status(500).json({
-      error: 'Ошибка сервера при запросе данных',
+      error: 'Server error while requesting data',
     });
   }
 });
@@ -130,10 +130,10 @@ router.get('/patients/:id/observations', async (req, res) => {
     data['originalUrl'] = externalFHIRUrl;
     res.json(data);
   } catch (error) {
-    console.error('Ошибка при выполнении запроса:', error);
+    console.error('Error executing request:', error);
 
     res.status(500).json({
-      error: 'Ошибка сервера при запросе данных',
+      error: 'Server error while requesting data',
     });
   }
 });
