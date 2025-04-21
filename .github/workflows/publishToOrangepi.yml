@@ -70,7 +70,7 @@ jobs:
             --ignore-failed-read \
             .
           
-          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT || '22' }} \
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
             app.tar.gz \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
 
