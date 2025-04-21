@@ -2,7 +2,7 @@ name: Deploy to OrangePi
 
 on:
   push:
-    branches: [ main ] # или master, в зависимости от основной ветки
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -11,20 +11,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-
-      - name: Create deployment archive
-        run: |
-          echo ".git" > exclude.txt
-          echo "node_modules" >> exclude.txt
-          echo ".github" >> exclude.txt
-          echo "*.tar.gz" >> exclude.txt
-          echo ".idea" >> exclude.txt
-          echo "frontend/node_modules" >> exclude.txt
-          echo "frontend/dist" >> exclude.txt
-          echo "backend/node_modules" >> exclude.txt
-          
-          tar --warning=no-file-changed --exclude-from=exclude.txt -czf fhir-app.tar.gz .
-
+        with:
+          fetch-depth: 0  # Получаем полную историю репозитория
 
       - name: Setup SSH
         run: |
@@ -33,33 +21,42 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Transfer archive to server
+      - name: Prepare project for deployment
         run: |
-          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT }} \
-            fhir-app.tar.gz \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/fhir-app.tar.gz
+          # Создаем временную директорию для файлов деплоя
+          mkdir -p /tmp/deploy-files
+          
+          # Копируем файлы проекта, исключая ненужные
+          rsync -av --exclude='.git' --exclude='node_modules' --exclude='.github' \
+            --exclude='.idea' --exclude='frontend/node_modules' --exclude='frontend/dist' \
+            --exclude='backend/node_modules' --exclude='*.tar.gz' \
+            ./ /tmp/deploy-files/
 
-      - name: Deploy on server
+      - name: Deploy to server using rsync
+        run: |
+          # Используем rsync для прямой передачи файлов на сервер
+          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ secrets.ORANGE_PI_PORT }}" \
+            --delete /tmp/deploy-files/ \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:~/fhir-app/
+
+      - name: Run deployment script on server
         run: |
           set -e
           set -x
           ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=60 -p ${{ secrets.ORANGE_PI_PORT }} \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
             set -e
-
-            # Используем уникальный путь для FHIR приложения
-            mkdir -p ~/fhir-app
-
-            tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
             
+            # Переходим в директорию приложения
             cd ~/fhir-app
             
+            # Останавливаем предыдущие контейнеры
             docker stop node_app || true
             docker rm node_app || true
-            
             docker stop fhir_app || true
             docker rm fhir_app || true
             
+            # Собираем и запускаем новый контейнер на порту 80
             docker build -t fhir-app:latest .
             docker run -d --name fhir_app \
               -p 80:3000 \
@@ -67,6 +64,7 @@ jobs:
               -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
               --restart unless-stopped \
               fhir-app:latest
-          
+            
+            # Проверяем что контейнер запущен
             docker ps | grep fhir_app
           EOF
