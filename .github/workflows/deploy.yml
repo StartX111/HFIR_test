@@ -1,4 +1,4 @@
-name: Deployment to Orange Pi server
+name: Build and Deploy to Orange Pi
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   id-token: write
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -20,180 +20,81 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      - name: Check out the repository code
+      - name: Checkout code
         uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm install
+
+      - name: Install frontend dependencies and build
+        run: |
+          cd frontend
+          npm install
+          npm run build
 
       - name: Set up SSH
         run: |
-          set -e
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Archive and upload code to server
+      - name: Create deployment archive
         run: |
-          set -e
-          set -x
-          if [ ! -d "$GITHUB_WORKSPACE" ]; then
-            echo "Error: Working directory does not exist or is inaccessible: $GITHUB_WORKSPACE"
-            exit 1
-          fi
-          echo "Contents of $GITHUB_WORKSPACE:"
-          ls -al "$GITHUB_WORKSPACE"
-          chmod -R u+rw "$GITHUB_WORKSPACE"
-          cp -R "$GITHUB_WORKSPACE" /tmp/workdir
-          tar --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -czf app.tar.gz \
+          tar -czf fhir-app.tar.gz \
             --exclude=.git \
             --exclude=.github \
             --exclude=*.log \
             --exclude=*.tmp \
             --exclude=node_modules \
-            --exclude=frontend/node_modules \
-            --exclude=frontend/dist \
             --exclude=backend/node_modules \
             --exclude=.idea \
-            -C /tmp/workdir .
-          if [ ! -f app.tar.gz ]; then
-            echo "Error: Archive file was not created. Exiting."
-            exit 1
-          fi
-          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
-            app.tar.gz \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
+            backend frontend Dockerfile docker-compose.yml
 
-      # Создаем Dockerfile отдельно для избежания проблем с here-document
-      - name: Create Dockerfile on server
+      - name: Upload to server
         run: |
-          set -e
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} "cat > /tmp/Dockerfile" << 'DOCKERFILE'
-          FROM node:20-alpine
+          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT }} \
+            fhir-app.tar.gz \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/fhir-app.tar.gz
 
-          WORKDIR /app
-
-          # Install backend dependencies
-          COPY backend/package*.json ./
-          RUN npm install --production
-
-          # Copy backend code
-          COPY backend/ ./
-
-          # Create directory for frontend
-          RUN mkdir -p frontend/dist
-
-          # Copy frontend build if exists
-          COPY frontend/dist/ ./frontend/dist/ || echo "No frontend/dist found"
-
-          # Environment variables
-          ENV NODE_ENV=production
-          ENV EXTERNAL_FHIR_URL='https://server.fire.ly/r4'
-
-          # Expose port
-          EXPOSE 3000
-
-          # Start command
-          CMD ["node", "server.js"]
-          DOCKERFILE
-
-      - name: Deploy in Docker on remote server
+      - name: Deploy container on server
         run: |
-          set -e
-          set -x
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
+          ssh -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT }} \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
             set -e
-            rm -rf ~/fhir-app && mkdir -p ~/fhir-app
-            tar xzf /tmp/app.tar.gz -C ~/fhir-app
+            
+            # Подготовка директории
+            rm -rf ~/fhir-app
+            mkdir -p ~/fhir-app
+            tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
             cd ~/fhir-app
             
-            # Копируем подготовленный Dockerfile
-            cp /tmp/Dockerfile .
-            
-            # Проверка структуры директорий
-            echo "Project structure:"
-            ls -la
-            echo "Backend structure:"
-            ls -la backend || echo "Backend directory not found!"
-            echo "Backend/src structure:"
-            ls -la backend/src || echo "Backend/src directory not found!"
-            
-            # Остановка и удаление предыдущих контейнеров
-            docker stop node_app 2>/dev/null || true
-            docker rm node_app 2>/dev/null || true
-            docker stop fhir_app 2>/dev/null || true 
+            # Остановка предыдущих контейнеров
+            docker stop fhir_app 2>/dev/null || true
             docker rm fhir_app 2>/dev/null || true
             
-            # Проверка наличия всех необходимых файлов для бэкенда
-            if [ ! -f "backend/server.js" ]; then
-              echo "Creating server.js in backend directory"
-              echo "const main = require('./src/main');" > backend/server.js
+            # Сборка и запуск
+            if [ -f docker-compose.yml ]; then
+              docker-compose down || true
+              docker-compose up -d --build
+            else
+              docker build -t fhir-app:latest .
+              docker run -d --name fhir_app \
+                -p 80:3000 \
+                -e NODE_ENV=production \
+                -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
+                --restart unless-stopped \
+                fhir-app:latest
             fi
             
-            if [ ! -d "backend/src" ]; then
-              echo "Creating src directory in backend"
-              mkdir -p backend/src
-            fi
-            
-            if [ ! -f "backend/src/main.js" ]; then
-              echo "Creating main.js in backend/src"
-              echo "const express = require('express'); const cors = require('cors'); const path = require('path'); const api = require('./api'); const app = express(); app.use(cors()); app.use(express.json()); app.use('/api', api); app.use(express.static(path.join(__dirname, '../frontend/dist'))); const PORT = process.env.PORT || 3000; app.listen(PORT, () => console.log('Server running on port', PORT));" > backend/src/main.js
-            fi
-            
-            if [ ! -f "backend/src/api.js" ]; then
-              echo "Copying api.js to backend/src directory"
-              if [ -f "api.js" ]; then
-                cp api.js backend/src/
-              else
-                echo "const { fetch } = require('undici'); const express = require('express'); const router = express.Router(); const externalFHIRUrl = process.env.EXTERNAL_FHIR_URL || 'http://localhost:8080/fhir'; router.get('/patients', async (req, res) => { const limit = req.query.limit || 10; try { const response = await fetch(`${externalFHIRUrl}/Patient?_count=${limit}`, { method: 'GET', headers: { 'Accept': 'application/fhir+json', 'Content-Type': 'application/json' }, }); if (!response.ok) { return res.status(response.status).json({ error: `API Error: ${response.statusText}`, }); } const data = await response.json(); data['originalUrl'] = externalFHIRUrl; res.json(data); } catch (error) { console.error('Error executing request:', error); res.status(500).json({ errorMessage: 'Server error while requesting data', error }); } }); module.exports = router;" > backend/src/api.js
-              fi
-            fi
-            
-            # Проверка наличия package.json
-            if [ ! -f "backend/package.json" ]; then
-              echo "Creating package.json in backend directory"
-              echo '{"name":"fhir-app-backend","version":"1.0.0","description":"FHIR App Backend","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.1.0","cors":"^2.8.5","undici":"^7.8.0"}}' > backend/package.json
-            fi
-            
-            echo "Building Docker image..."
-            docker build -t fhir-app:latest . --no-cache
-            
-            echo "Running new container..."
-            docker run -d --name fhir_app \
-              -p 80:3000 \
-              -e NODE_ENV=production \
-              -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
-              --restart unless-stopped \
-              fhir-app:latest
-            
-            echo "Container status:"
-            docker ps | grep fhir_app || echo "CONTAINER NOT FOUND!"
-            
-            echo "Container logs:"
-            sleep 3  # Даем контейнеру время запуститься
-            docker logs fhir_app || echo "Cannot retrieve logs"
-          EOF
-
-      - name: Verify deployment
-        run: |
-          set -e
-          echo "Waiting for deployment to stabilize..."
-          sleep 15
-          
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
-            set -e
-            echo "Final container status:"
-            docker ps | grep fhir_app || echo "ERROR: Container not running!"
-            
-            echo "Recent container logs:"
-            docker logs fhir_app --tail 20 || echo "Cannot retrieve logs"
-            
-            # Проверка сетевой доступности
-            echo "Checking application network access:"
-            curl -s -I http://localhost:80/ || echo "App not responding on port 80"
-            
-            # Выводим информацию о контейнере
-            echo "Container details:"
-            docker inspect fhir_app --format='{{.State.Status}}: Started at {{.State.StartedAt}}'
+            # Статус контейнера
+            docker ps | grep fhir_app
           EOF
