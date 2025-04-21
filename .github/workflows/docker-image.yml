@@ -1,0 +1,62 @@
+name: Deploy FHIR App to Server
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Create deployment archive
+        run: |
+          tar -czf fhir-app.tar.gz --exclude='.git' --exclude='node_modules' .
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
+
+      - name: Transfer archive to server
+        run: |
+          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT }} \
+            fhir-app.tar.gz \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/fhir-app.tar.gz
+
+      - name: Deploy on server
+        run: |
+          set -e
+          set -x
+          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=60 -p ${{ secrets.ORANGE_PI_PORT }} \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
+            set -e
+            
+            # Создаем или очищаем директорию
+            mkdir -p ~/fhir-app
+            
+            # Распаковываем свежий архив
+            tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
+            
+            # Переходим в директорию приложения
+            cd ~/fhir-app
+            
+            # Останавливаем старый node_app (другой проект)
+            docker stop node_app || true
+            docker rm node_app || true
+            
+            # Обновляем docker-compose.yml для использования порта 80
+            sed -i 's/"3000:3000"/"80:3000"/' docker-compose.yml
+            
+            # Запускаем через docker-compose
+            docker-compose down || true
+            docker-compose up -d --build
+            
+            # Проверяем что контейнер запущен
+            docker ps | grep fhir_app
+          EOF
