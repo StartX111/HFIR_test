@@ -14,7 +14,17 @@ jobs:
 
       - name: Create deployment archive
         run: |
-          tar -czf fhir-app.tar.gz --exclude='.git' --exclude='node_modules' .
+          echo ".git" > exclude.txt
+          echo "node_modules" >> exclude.txt
+          echo ".github" >> exclude.txt
+          echo "*.tar.gz" >> exclude.txt
+          echo ".idea" >> exclude.txt
+          echo "frontend/node_modules" >> exclude.txt
+          echo "frontend/dist" >> exclude.txt
+          echo "backend/node_modules" >> exclude.txt
+          
+          tar --warning=no-file-changed --exclude-from=exclude.txt -czf fhir-app.tar.gz .
+
 
       - name: Setup SSH
         run: |
@@ -39,17 +49,17 @@ jobs:
 
             # Используем уникальный путь для FHIR приложения
             mkdir -p ~/fhir-app
-  
+
             tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
-  
+            
             cd ~/fhir-app
-  
+            
             docker stop node_app || true
             docker rm node_app || true
-  
+            
             docker stop fhir_app || true
             docker rm fhir_app || true
-  
+            
             docker build -t fhir-app:latest .
             docker run -d --name fhir_app \
               -p 80:3000 \
