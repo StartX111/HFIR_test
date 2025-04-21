@@ -113,7 +113,7 @@ export default {
             .map(([key, value]) => `${key}=${value}`)
             .join(',');
 
-        const response = await fetch(`http://localhost:3000/api/patients/search${queryString ? '?' + queryString : ''}`, {
+        const response = await fetch(`/api/patients/search${queryString ? '?' + queryString : ''}`, {
           method: 'GET',
           cache: 'no-cache',
         });
@@ -147,7 +147,7 @@ export default {
 
         this.isLoading = true;
         try {
-          const response = await fetch(`http://localhost:3000/api/patients/${patientId}`, {
+          const response = await fetch(`/api/patients/${patientId}`, {
             method: 'GET',
             cache: 'no-cache',
           })
@@ -174,7 +174,7 @@ export default {
 
         this.isLoading = true;
         try {
-          const response = await fetch(`http://localhost:3000/api/patients/${patientId}/observations`, {
+          const response = await fetch(`/api/patients/${patientId}/observations`, {
             method: 'GET',
             cache: 'no-cache',
           })

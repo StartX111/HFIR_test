@@ -35,8 +35,8 @@
             @click="navigateToDetail(item?.resource?.id)"
         >
         </td>
-        <td>{{ nameFormating(item?.resource?.name) || 'N/A' }}</td>
-        <td>{{ familyFormating(item?.resource?.name) || 'N/A' }}</td>
+        <td @click="navigateToDetail(item?.resource?.id)">{{ nameFormating(item?.resource?.name) || 'N/A' }}</td>
+        <td @click="navigateToDetail(item?.resource?.id)">{{ familyFormating(item?.resource?.name) || 'N/A' }}</td>
         <td>{{ item?.resource?.gender || 'N/A' }}</td>
         <td>{{ (item?.resource?.birthDate && dateFormater(item?.resource?.birthDate)) || 'N/A' }}</td>
         <td>{{ item?.resource?.meta?.lastUpdated && dateFormater(item?.resource?.meta?.lastUpdated) || 'N/A' }}</td>
@@ -124,7 +124,7 @@ export default {
             .map(([key, value]) => `${key}=${value}`)
             .join(',');
 
-        const response = await fetch(`http://localhost:3000/api/patients/search${queryString ? '?' + queryString : ''}`, {
+        const response = await fetch(`/api/patients/search${queryString ? '?' + queryString : ''}`, {
           method: 'GET',
           cache: 'no-cache',
         });
@@ -145,7 +145,7 @@ export default {
         if (this.selectedNumber > 10) {
           query = `?limit=${this.selectedNumber}`;
         }
-        const response = await fetch(`http://localhost:3000/api/patients${query}`, {
+        const response = await fetch(`/api/patients${query}`, {
           method: 'GET',
           cache: 'no-cache',
         });
@@ -191,10 +191,10 @@ th, td {
 th, td {
   border: 1px solid #ddd;
 }
-td:nth-child(2) {
+td:nth-child(2), td:nth-child(3), td:nth-child(4) {
   cursor: pointer;
 }
-td:nth-child(2):hover {
+td:nth-child(2):hover, td:nth-child(3):hover, td:nth-child(4):hover  {
   background-color: #4735e0;
 }
 select {
