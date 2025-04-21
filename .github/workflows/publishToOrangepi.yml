@@ -1,106 +1,106 @@
-name: Deployment to Orange Pi server
+name: Deployment to OrangePi Server
 
 on:
-  # Запуск при пушах в ветку master
   push:
     branches:
       - "master"
-
-  # Ручной запуск из вкладки Actions
   workflow_dispatch:
 
 permissions:
-  contents: read # Чтение файлов репозитория
-  pages: write   # Публикация изменений на GitHub Pages
-  id-token: write # Выдача ID-токена для OpenID Connect (если нужно)
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     concurrency:
-      group: "deployment" # Для всех развёртываний
-      cancel-in-progress: false # Ждем завершения текущей задачи
+      group: "fhir-app-deployment"
+      cancel-in-progress: false
 
     steps:
-      # 1. Скачиваем код из репозитория
       - name: Check out the repository code
         uses: actions/checkout@v3
 
-      # 2. Настройка SSH-соединения
       - name: Set up SSH
         run: |
-          set -e  # Прекращаем выполнение при ошибках
+          set -e
           mkdir -p ~/.ssh
-          # Сохранение приватного SSH-ключа
+          # Сохранение приватного SSH-ключа из секретов GitHub
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # Добавление хоста для known_hosts
+          # Добавление хоста в известные хосты
           ssh-keyscan -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      # 3. Архивация кода и отправка его на сервер
+      - name: Create docker-compose.yml
+        run: |
+          cat > docker-compose.yml << 'EOF'
+          version: '3'
+          
+          services:
+            fhir-app:
+              build:
+                context: .
+                dockerfile: Dockerfile
+              container_name: fhir_app
+              restart: unless-stopped
+              ports:
+                - "3000:3000"
+              environment:
+                - NODE_ENV=production
+                - EXTERNAL_FHIR_URL=${EXTERNAL_FHIR_URL}
+              volumes:
+                - ./.env:/app/backend/.env
+          EOF
+
       - name: Archive and upload code to server
         run: |
-          set -e  # Прекращаем выполнение при ошибках
-          set -x  # Включаем режим отладки для отображения команд
-
-          # Проверяем, что рабочая директория существует
-          if [ ! -d "$GITHUB_WORKSPACE" ]; then
-            echo "Error: Working directory does not exist or is inaccessible: $GITHUB_WORKSPACE"
-            exit 1
-          fi
-
-          # Просмотр содержимого рабочей директории
-          echo "Contents of $GITHUB_WORKSPACE:"
-          ls -al "$GITHUB_WORKSPACE"
-
-          # Выдаём файлам корректные права
-          chmod -R u+rw "$GITHUB_WORKSPACE"
-
-          # Создаём временную копию директории
-          cp -R "$GITHUB_WORKSPACE" /tmp/workdir
-
-          # Архивируем текущую директорию (исключая .git, .github и ненужные файлы)
-          tar --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -czf app.tar.gz \
+          set -e
+          # Архивируем проект (исключая .git, .github и другие ненужные файлы)
+          tar -czf app.tar.gz \
             --exclude=.git \
             --exclude=.github \
             --exclude=*.log \
-            --exclude=*.tmp \
             --exclude=node_modules \
-            -C /tmp/workdir .
-
-          # Проверяем, что файл архива создан
-          if [ ! -f app.tar.gz ]; then
-            echo "Error: Archive file was not created. Exiting."
-            exit 1
-          fi
-
+            .
+          
           # Загружаем архив на удалённый сервер
-          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
+          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT || '22' }} \
             app.tar.gz \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
 
-      # 4. Развёртывание на удалённом сервере с использованием Docker
-      - name: Deploy in Docker on remote server
+      - name: Deploy on OrangePi
         run: |
-          set -e   # Прекращаем выполнение при ошибках
-          set -x   # Включаем режим отладки для отображения команд
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
+          ssh -i ~/.ssh/id_ed25519 -p ${{ secrets.ORANGE_PI_PORT || '22' }} \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
-            set -e  # Прерываем выполнение при ошибках внутри SSH
-
-            # Удаляем старую директорию (если существует) и создаем новую
-            rm -rf ~/app && mkdir -p ~/app
-
+            set -e
+          
+            # Создаем или обновляем директорию приложения
+            mkdir -p ~/fhir-app
+          
             # Распаковываем архив
-            tar xzf /tmp/app.tar.gz -C ~/app
-
+            tar xzf /tmp/app.tar.gz -C ~/fhir-app
+          
             # Переходим в директорию приложения
-            cd ~/app
-
-            # Останавливаем старый контейнер (если он существует)
+            cd ~/fhir-app
+          
+            # Создаем .env файл, если его нет
+            if [ ! -f .env ]; then
+              echo "EXTERNAL_FHIR_URL=${{ secrets.EXTERNAL_FHIR_URL || 'http://localhost:8080/fhir' }}" > .env
+            fi
+          
+            sed -i 's|CMD \["node", "server.js"\]|CMD ["node", "/app/backend/server.js"]|' Dockerfile
+          
             docker-compose down || true
-
-            # Собираем и запускаем новый контейнер
+          
+            docker system prune -f
+          
             docker-compose up -d --build
+          
+            if ! docker ps | grep fhir_app; then
+              echo "Container failed to start!"
+              docker-compose logs
+              exit 1
+            else
+              echo "Deployment successful!"
+            fi
           EOF
