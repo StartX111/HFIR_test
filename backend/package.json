@@ -2,16 +2,20 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "for testing FHIR",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "dev": "node src/main.js",
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "test",
+    "FHIR"
+  ],
   "author": "Viktor Vovk",
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "undici": "^7.8.0"
   }
