@@ -111,7 +111,7 @@ router.get('/patients/:id/observations', async (req, res) => {
   const { id } = req.params;
 
   try {
-    const response = await fetch(`${externalFHIRUrl}/Observation?subject=Patient/${id}`, {
+    const response = await fetch(`${externalFHIRUrl}/Observation?patient=${id}`, {
       method: 'GET',
       headers: {
         'Accept': 'application/fhir+json',
@@ -127,8 +127,23 @@ router.get('/patients/:id/observations', async (req, res) => {
 
     const data = await response.json();
 
-    data['originalUrl'] = externalFHIRUrl;
-    res.json(data);
+    const responseOther = await fetch(`${externalFHIRUrl}/Observation?patient=${id}&category=vital-signs`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/fhir+json',
+        'Content-Type': 'application/json'
+      },
+    });
+
+    if (!responseOther.ok && !response.ok) {
+      return res.status(responseOther.status).json({
+        error: `API Error: ${responseOther.statusText} and ${response.statusText}`,
+      });
+    }
+
+    const data2 = await responseOther.json();
+
+    res.json({...data, ...data2, originalUrl: externalFHIRUrl});
   } catch (error) {
     console.error('Error executing request:', error);
 
