@@ -25,10 +25,8 @@ jobs:
         run: |
           set -e
           mkdir -p ~/.ssh
-          # Сохранение приватного SSH-ключа из секретов GitHub
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          # Добавление хоста в известные хосты
           ssh-keyscan -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
       - name: Create docker-compose.yml
@@ -55,15 +53,23 @@ jobs:
       - name: Archive and upload code to server
         run: |
           set -e
-          # Архивируем проект (исключая .git, .github и другие ненужные файлы)
+          TEMP_DIR=$(mktemp -d)
+          
+          cp -r ./* "$TEMP_DIR/" 2>/dev/null || true
+          cp -r ./.* "$TEMP_DIR/" 2>/dev/null || true
+          cp docker-compose.yml "$TEMP_DIR/"
+          
+          cd "$TEMP_DIR"
+          
           tar -czf app.tar.gz \
             --exclude=.git \
             --exclude=.github \
             --exclude=*.log \
             --exclude=node_modules \
+            --warning=no-file-changed \
+            --ignore-failed-read \
             .
           
-          # Загружаем архив на удалённый сервер
           scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT || '22' }} \
             app.tar.gz \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
@@ -74,16 +80,12 @@ jobs:
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
             set -e
           
-            # Создаем или обновляем директорию приложения
             mkdir -p ~/fhir-app
           
-            # Распаковываем архив
             tar xzf /tmp/app.tar.gz -C ~/fhir-app
           
-            # Переходим в директорию приложения
             cd ~/fhir-app
           
-            # Создаем .env файл, если его нет
             if [ ! -f .env ]; then
               echo "EXTERNAL_FHIR_URL=${{ secrets.EXTERNAL_FHIR_URL || 'http://localhost:8080/fhir' }}" > .env
             fi
