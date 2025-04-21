@@ -60,5 +60,3 @@ jobs:
             # Проверяем что контейнер запущен
             docker ps | grep fhir_app
           EOF
-
-
