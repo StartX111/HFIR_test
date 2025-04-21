@@ -23,15 +23,6 @@ jobs:
       - name: Check out the repository code
         uses: actions/checkout@v3
 
-      - name: Debug repository structure
-        run: |
-          echo "Contents of repo:"
-          ls -la
-          echo "Contents of backend directory (if exists):"
-          ls -la backend || echo "Backend directory not found!"
-          echo "Contents of frontend directory (if exists):"
-          ls -la frontend || echo "Frontend directory not found!"
-
       - name: Set up SSH
         run: |
           set -e
@@ -40,54 +31,51 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Prepare backend structure if needed
-        run: |
-          # Проверяем структуру проекта и создаем недостающие директории если нужно
-          if [ ! -d "backend" ]; then
-            echo "Creating backend directory structure..."
-            mkdir -p backend/src
-            
-            # Переносим server.js в корень backend
-            if [ -f "server.js" ]; then
-              cp server.js backend/
-            else
-              echo "console.log('Server starting...'); const main = require('./src/main');" > backend/server.js
-            fi
-            
-            # Переносим api.js в src если он есть
-            if [ -f "api.js" ]; then
-              cp api.js backend/src/
-            fi
-            
-            # Если есть main.js, переносим его в src
-            if [ -f "main.js" ]; then
-              cp main.js backend/src/
-            else
-              # Создаем простой main.js если его нет
-              echo "const express = require('express'); const cors = require('cors'); const path = require('path'); const api = require('./api'); const app = express(); app.use(cors()); app.use(express.json()); app.use('/api', api); app.use(express.static(path.join(__dirname, '../frontend/dist'))); const PORT = process.env.PORT || 3000; app.listen(PORT, () => console.log('Server running on port', PORT));" > backend/src/main.js
-            fi
-            
-            # Создаем package.json для backend если его нет
-            if [ ! -f "backend/package.json" ]; then
-              echo '{"name":"fhir-app-backend","version":"1.0.0","description":"FHIR App Backend","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.1.0","cors":"^2.8.5","undici":"^7.8.0"}}' > backend/package.json
-            fi
-          fi
-
       - name: Archive and upload code to server
         run: |
           set -e
           set -x
+          # Добавляем метку времени в архив для принудительного обновления
+          TIMESTAMP=$(date +%s)
+          echo "Build timestamp: $TIMESTAMP" > timestamp.txt
+          
           if [ ! -d "$GITHUB_WORKSPACE" ]; then
             echo "Error: Working directory does not exist or is inaccessible: $GITHUB_WORKSPACE"
             exit 1
           fi
-          echo "Contents of $GITHUB_WORKSPACE after preparation:"
+          echo "Contents of $GITHUB_WORKSPACE:"
           ls -la "$GITHUB_WORKSPACE"
-          ls -la "$GITHUB_WORKSPACE/backend" || echo "Backend still missing!"
+          
+          # Проверяем структуру каталогов
+          if [ -d "backend" ]; then
+            echo "Backend directory exists in repository"
+            ls -la backend
+          else
+            echo "WARNING: Backend directory missing in repository"
+            mkdir -p backend/src
+            # Минимальный пакет для backend если его нет
+            echo '{"name":"fhir-app-backend","version":"1.0.0","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.1.0","cors":"^2.8.5","undici":"^7.8.0"}}' > backend/package.json
+            
+            # Перенос файлов если они в корне
+            [ -f "server.js" ] && cp server.js backend/
+            [ -f "api.js" ] && cp api.js backend/src/
+            [ -f "main.js" ] && cp main.js backend/src/
+            
+            echo "Created backend directory with basic structure"
+          fi
+          
+          # Проверяем frontend
+          if [ -d "frontend" ]; then
+            echo "Frontend directory exists in repository"
+            ls -la frontend
+          else
+            echo "WARNING: Frontend directory missing in repository"
+          fi
           
           chmod -R u+rw "$GITHUB_WORKSPACE"
           cp -R "$GITHUB_WORKSPACE" /tmp/workdir
           
+          # Создаем архив
           tar --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -czf app.tar.gz \
             --exclude=.git \
             --exclude=.github \
@@ -99,107 +87,165 @@ jobs:
             --exclude=backend/node_modules \
             --exclude=.idea \
             -C /tmp/workdir .
-            
+          
           if [ ! -f app.tar.gz ]; then
             echo "Error: Archive file was not created. Exiting."
             exit 1
           fi
           
-          echo "Archive created with size: $(du -h app.tar.gz | cut -f1)"
+          echo "Archive created successfully, size: $(du -h app.tar.gz | cut -f1)"
           
+          # Отправка архива на сервер
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
             app.tar.gz \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app-$TIMESTAMP.tar.gz
+          
+          # Сохраняем метку времени для следующего шага
+          echo "DEPLOY_TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
 
       - name: Deploy in Docker on remote server
         run: |
           set -e
           set -x
+          # Используем метку времени из предыдущего шага
+          TIMESTAMP="${{ env.DEPLOY_TIMESTAMP }}"
+          
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << EOF
             set -e
-            rm -rf ~/fhir-app && mkdir -p ~/fhir-app
-            tar xzf /tmp/app.tar.gz -C ~/fhir-app
-            cd ~/fhir-app
+            set -x
             
-            echo "Contents of fhir-app directory on server:"
+            # Проверяем текущее состояние Docker
+            echo "Current Docker containers:"
+            docker ps -a
+            
+            # Принудительно останавливаем и удаляем контейнер
+            echo "Stopping and removing containers..."
+            docker stop fhir_app 2>/dev/null || echo "Container fhir_app was not running"
+            docker rm fhir_app 2>/dev/null || echo "Container fhir_app did not exist"
+            docker stop node_app 2>/dev/null || echo "Container node_app was not running"
+            docker rm node_app 2>/dev/null || echo "Container node_app did not exist"
+            
+            # Проверка образа
+            echo "Current images before build:"
+            docker images | grep fhir-app || echo "No fhir-app image found"
+            
+            # Распаковка с новой меткой времени
+            echo "Unpacking archive with timestamp $TIMESTAMP"
+            rm -rf ~/fhir-app-$TIMESTAMP && mkdir -p ~/fhir-app-$TIMESTAMP
+            tar xzf /tmp/app-$TIMESTAMP.tar.gz -C ~/fhir-app-$TIMESTAMP
+            
+            # Симлинк на актуальную версию
+            rm -rf ~/fhir-app
+            ln -sf ~/fhir-app-$TIMESTAMP ~/fhir-app
+            
+            cd ~/fhir-app
+            echo "Contents of deployment directory:"
             ls -la
             
-            # Проверяем и создаем backend если его нет
+            # Проверка структуры проекта
             if [ ! -d "backend" ]; then
-              echo "ERROR: Backend directory still missing after extraction!"
-              echo "Creating minimal backend structure on server..."
+              echo "ERROR: Backend directory still missing! Creating minimal backend..."
               mkdir -p backend/src
+              # Копирование файлов из корня в backend если они существуют
+              [ -f "server.js" ] && cp server.js backend/
+              [ -f "api.js" ] && cp api.js backend/src/
+              [ -f "main.js" ] && cp main.js backend/src/
               
-              # Копируем необходимые файлы в backend
-              if [ -f "server.js" ]; then
-                cp server.js backend/
-              fi
-              if [ -f "api.js" ]; then
-                cp api.js backend/src/
-              fi
-              if [ -f "main.js" ]; then
-                cp main.js backend/src/
-              fi
-              if [ -f "package.json" ]; then
-                cp package.json backend/
-              else
-                echo '{"name":"fhir-app-backend","version":"1.0.0","description":"FHIR App Backend","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.1.0","cors":"^2.8.5","undici":"^7.8.0"}}' > backend/package.json
+              # Создаем минимальный package.json для backend
+              if [ ! -f "backend/package.json" ]; then
+                echo '{"name":"fhir-app-backend","version":"1.0.0","main":"server.js","scripts":{"start":"node server.js"},"dependencies":{"express":"^5.1.0","cors":"^2.8.5","undici":"^7.8.0"}}' > backend/package.json
               fi
             fi
             
-            echo "Creating Dockerfile"
-            cat > Dockerfile << 'DOCKEREOF'
+            # Создаем Dockerfile
+            echo "Creating Dockerfile with timestamp $TIMESTAMP"
+            cat > Dockerfile << DOCKEREOF
             FROM node:20-alpine
             
             WORKDIR /app
             
-            # Установка зависимостей для бэкенда
+            # Label for version tracking
+            LABEL build_timestamp="$TIMESTAMP"
+            
+            # Install backend dependencies
             COPY backend/package*.json ./
             RUN npm install --production
             
-            # Копирование исходного кода
+            # Copy backend code
             COPY backend/ ./
             
-            # Создание директории для фронтенда
+            # Create directory for frontend
             RUN mkdir -p frontend/dist
             
-            # Копирование собранного фронтенда
-            COPY frontend/dist/ ./frontend/dist/
+            # Copy frontend build if exists
+            COPY frontend/dist/ ./frontend/dist/ 2>/dev/null || echo "No frontend/dist found"
             
-            # Установка переменных окружения
+            # Environment variables
             ENV NODE_ENV=production
             ENV EXTERNAL_FHIR_URL='https://server.fire.ly/r4'
             
-            # Открытие порта
+            # Expose port
             EXPOSE 3000
             
-            # Запуск приложения
+            # Start command
             CMD ["node", "server.js"]
             DOCKEREOF
             
-            echo "Docker build and run"
-            docker stop node_app || true
-            docker rm node_app || true
-            docker stop fhir_app || true
-            docker rm fhir_app || true
+            # Показываем созданный Dockerfile
+            echo "Dockerfile contents:"
+            cat Dockerfile
             
-            if [ -f docker-compose.yml ]; then
-              docker-compose down || true
-              docker-compose up -d --build
-            else
-              docker build -t fhir-app:latest .
-              docker run -d --name fhir_app \
-                -p 80:3000 \
-                -e NODE_ENV=production \
-                -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
-                --restart unless-stopped \
-                fhir-app:latest
-            fi
+            # Сборка с принудительной пересборкой (--no-cache)
+            echo "Building Docker image with --no-cache..."
+            docker build --no-cache -t fhir-app:latest .
             
-            echo "Container status:"
-            docker ps | grep fhir
+            echo "Current images after build:"
+            docker images | grep fhir-app
             
+            # Запуск контейнера
+            echo "Running new container..."
+            docker run -d --name fhir_app \
+              -p 80:3000 \
+              -e NODE_ENV=production \
+              -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
+              --restart unless-stopped \
+              fhir-app:latest
+            
+            # Проверка статуса
+            echo "New container status:"
+            docker ps -a | grep fhir
+            
+            # Вывод логов
+            sleep 5
             echo "Container logs:"
-            docker logs fhir_app --tail 20
+            docker logs fhir_app
+            
+            # Очистка
+            echo "Cleaning up old archives..."
+            rm -f /tmp/app-$TIMESTAMP.tar.gz
+            
+            # Проверка доступности приложения
+            echo "Checking application availability:"
+            curl -s -I http://localhost:80/ || echo "Application not responding to HTTP requests!"
+          EOF
+
+      - name: Verify deployment
+        run: |
+          set -e
+          echo "Waiting for deployment to stabilize..."
+          sleep 10
+          
+          echo "Checking container status on server..."
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
+            set -e
+            echo "Container status:"
+            docker ps | grep fhir || echo "ERROR: fhir container not found!"
+            
+            echo "Container logs (last 50 lines):"
+            docker logs fhir_app --tail 50 || echo "ERROR: Cannot get logs!"
+            
+            echo "Checking server response:"
+            curl -s -I http://localhost:80/ || echo "WARNING: Application not responding to HTTP requests!"
           EOF
