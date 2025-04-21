@@ -1,65 +1,92 @@
-name: Deploy to OrangePi
+name: Deployment to Orange Pi server
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - "main"
   workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   deploy:
-    runs-on: node:18
+    runs-on: ubuntu-latest
+
+    concurrency:
+      group: "deployment"
+      cancel-in-progress: false
 
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+      - name: Check out the repository code
+        uses: actions/checkout@v3
 
-      - name: Setup SSH
+      - name: Set up SSH
         run: |
+          set -e
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Install rsync
-        run: |
-          apt-get update
-          apt-get install -y rsync openssh-client
-
-      - name: Deploy to server using rsync
-        run: |
-          rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ secrets.ORANGE_PI_PORT }}" \
-            --exclude='.git' --exclude='node_modules' --exclude='.github' \
-            --exclude='.idea' --exclude='frontend/node_modules' --exclude='frontend/dist' \
-            --exclude='backend/node_modules' --exclude='*.tar.gz' \
-            --delete ./ ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:~/fhir-app/
-
-      - name: Run deployment script on server
+      - name: Archive and upload code to server
         run: |
           set -e
           set -x
-          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=60 -p ${{ secrets.ORANGE_PI_PORT }} \
+          if [ ! -d "$GITHUB_WORKSPACE" ]; then
+            echo "Error: Working directory does not exist or is inaccessible: $GITHUB_WORKSPACE"
+            exit 1
+          fi
+          echo "Contents of $GITHUB_WORKSPACE:"
+          ls -al "$GITHUB_WORKSPACE"
+          chmod -R u+rw "$GITHUB_WORKSPACE"
+          cp -R "$GITHUB_WORKSPACE" /tmp/workdir
+          tar --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -czf app.tar.gz \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude=*.log \
+            --exclude=*.tmp \
+            --exclude=node_modules \
+            --exclude=frontend/node_modules \
+            --exclude=frontend/dist \
+            --exclude=backend/node_modules \
+            --exclude=.idea \
+            -C /tmp/workdir .
+          if [ ! -f app.tar.gz ]; then
+            echo "Error: Archive file was not created. Exiting."
+            exit 1
+          fi
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -P ${{ secrets.ORANGE_PI_PORT }} \
+            app.tar.gz \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
+
+      - name: Deploy in Docker on remote server
+        run: |
+          set -e
+          set -x
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -p ${{ secrets.ORANGE_PI_PORT }} \
             ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
             set -e
-            
-            # Переходим в директорию приложения
+            rm -rf ~/fhir-app && mkdir -p ~/fhir-app
+            tar xzf /tmp/app.tar.gz -C ~/fhir-app
             cd ~/fhir-app
-            
-            # Останавливаем предыдущие контейнеры
             docker stop node_app || true
             docker rm node_app || true
             docker stop fhir_app || true
             docker rm fhir_app || true
-            
-            # Собираем и запускаем новый контейнер на порту 80
-            docker build -t fhir-app:latest .
-            docker run -d --name fhir_app \
-              -p 80:3000 \
-              -e NODE_ENV=production \
-              -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
-              --restart unless-stopped \
-              fhir-app:latest
-            
-            # Проверяем что контейнер запущен
-            docker ps | grep fhir_app
+            if [ -f docker-compose.yml ]; then
+              docker-compose down || true
+              docker-compose up -d --build
+            else
+              docker build -t fhir-app:latest .
+              docker run -d --name fhir_app \
+                -p 80:3000 \
+                -e NODE_ENV=production \
+                -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
+                --restart unless-stopped \
+                fhir-app:latest
+            fi
+            docker ps | grep fhir
           EOF
