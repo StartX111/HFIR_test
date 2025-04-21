@@ -7,12 +7,12 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: node:18
 
     steps:
       - uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # Получаем полную историю репозитория
+          fetch-depth: 0
 
       - name: Setup SSH
         run: |
@@ -21,23 +21,18 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Prepare project for deployment
+      - name: Install rsync
         run: |
-          # Создаем временную директорию для файлов деплоя
-          mkdir -p /tmp/deploy-files
-          
-          # Копируем файлы проекта, исключая ненужные
-          rsync -av --exclude='.git' --exclude='node_modules' --exclude='.github' \
-            --exclude='.idea' --exclude='frontend/node_modules' --exclude='frontend/dist' \
-            --exclude='backend/node_modules' --exclude='*.tar.gz' \
-            ./ /tmp/deploy-files/
+          apt-get update
+          apt-get install -y rsync openssh-client
 
       - name: Deploy to server using rsync
         run: |
-          # Используем rsync для прямой передачи файлов на сервер
           rsync -avz -e "ssh -i ~/.ssh/id_ed25519 -p ${{ secrets.ORANGE_PI_PORT }}" \
-            --delete /tmp/deploy-files/ \
-            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:~/fhir-app/
+            --exclude='.git' --exclude='node_modules' --exclude='.github' \
+            --exclude='.idea' --exclude='frontend/node_modules' --exclude='frontend/dist' \
+            --exclude='backend/node_modules' --exclude='*.tar.gz' \
+            --delete ./ ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:~/fhir-app/
 
       - name: Run deployment script on server
         run: |
