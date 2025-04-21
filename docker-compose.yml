@@ -10,5 +10,5 @@ services:
       NODE_ENV: production
       EXTERNAL_FHIR_URL: 'https://server.fire.ly/r4'
     ports:
-      - "3000:3000"
+      - "80:3000"
     restart: unless-stopped
