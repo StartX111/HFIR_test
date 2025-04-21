@@ -25,12 +25,37 @@ jobs:
 
       - name: Deploy to server
         run: |
-          scp -i ~/.ssh/id_ed25519 app.tar.gz ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/app.tar.gz
+          set -e   # Прекращаем выполнение при ошибках
+          set -x   # Включаем режим отладки для отображения команд
+          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=60 -p ${{ secrets.ORANGE_PI_PORT }} \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} << 'EOF'
+            set -e  # Прерываем выполнение при ошибках внутри SSH
           
-          ssh -i ~/.ssh/id_ed25519 ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }} "
-            cd /tmp
-            docker load -i app.tar.gz
-            docker stop webapp || true
-            docker rm webapp || true
-            docker run -d --name webapp -p 3000:3000 --restart always webapp:latest
-          "
+            # Используем уникальный путь для FHIR приложения
+            mkdir -p ~/fhir-app
+          
+            # Распаковываем архив
+            tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
+          
+            # Переходим в директорию приложения
+            cd ~/fhir-app
+          
+            # Проверяем, запущен ли контейнер, и останавливаем его
+            if docker ps | grep -q fhir_app; then
+              docker stop fhir_app
+              docker rm fhir_app
+            fi
+          
+            # Собираем и запускаем новый контейнер
+            docker build -t fhir-app:latest .
+            docker run -d --name fhir_app \
+              -p 3000:3000 \
+              -e NODE_ENV=production \
+              -e EXTERNAL_FHIR_URL='https://server.fire.ly/r4' \
+              --restart unless-stopped \
+              fhir-app:latest
+          
+            # Проверяем что контейнер запущен
+            docker ps | grep fhir_app
+          EOF
+        
