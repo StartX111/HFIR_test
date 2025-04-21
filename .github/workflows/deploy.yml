@@ -6,25 +6,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v3
 
-      - name: Build Docker image
+      - name: Create deployment archive
         run: |
-          docker build -t webapp:latest .
-          docker save -o app.tar.gz webapp:latest
+          tar -czf fhir-app.tar.gz --exclude='.git' --exclude='node_modules' .
 
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -p ${{ secrets.ORANGE_PI_PORT }} ${{ secrets.ORANGE_PI_IP }} >> ~/.ssh/known_hosts
 
-      - name: Deploy to server
+      - name: Transfer archive to server
+        run: |
+          scp -i ~/.ssh/id_ed25519 -P ${{ secrets.ORANGE_PI_PORT }} \
+            fhir-app.tar.gz \
+            ${{ secrets.ORANGE_PI_USER }}@${{ secrets.ORANGE_PI_IP }}:/tmp/fhir-app.tar.gz
+
+      - name: Deploy on server
         run: |
           set -e
           set -x
@@ -35,21 +40,16 @@ jobs:
             # Используем уникальный путь для FHIR приложения
             mkdir -p ~/fhir-app
   
-            # Распаковываем архив
             tar xzf /tmp/fhir-app.tar.gz -C ~/fhir-app
   
-            # Переходим в директорию приложения
             cd ~/fhir-app
   
-            # Останавливаем старый контейнер node_app
-            docker stop node_app
-            docker rm node_app
+            docker stop node_app || true
+            docker rm node_app || true
   
-            # Останавливаем предыдущую версию fhir_app (если она существует)
             docker stop fhir_app || true
             docker rm fhir_app || true
   
-            # Собираем и запускаем новый контейнер на порту 80
             docker build -t fhir-app:latest .
             docker run -d --name fhir_app \
               -p 80:3000 \
@@ -58,6 +58,5 @@ jobs:
               --restart unless-stopped \
               fhir-app:latest
           
-            # Проверяем что контейнер запущен
             docker ps | grep fhir_app
           EOF
